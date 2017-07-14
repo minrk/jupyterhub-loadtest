@@ -12,22 +12,30 @@ class User:
         self.session = requests.Session()
 
     def login(self):
-        self.session.post(
+        r = self.session.post(
             self.hub_url + '/hub/login',
             data={'username': self.username, 'password': self.password}
         )
+        r.raise_for_status()
 
     def start_server(self):
         # Using this and not the API since it seems there isn't an easy
         # way to find out if the server has fully started?
         next_url = self.hub_url + '/hub/spawn'
-        for i in range(20):
+        # give each spawner 2 minutes to redirect correctly
+        for i in range(120):
             expected_url = self.hub_url + '/user/' + self.username + '/tree'
-            next_url = self.session.get(next_url).url
-            if next_url == expected_url:
-                break
-            time.sleep(10)
+            r = self.session.get(next_url)
+            r.raise_for_status()
+            next_url = r.url
+            if next_url.startswith(expected_url):
+                return True
+            else:
+                if not next_url.startswith(self.hub_url + '/hub/user/%s' % self.username):
+                    print("unexpected %s != %s" % (next_url, expected_url))
+                time.sleep(1)
         else:
+            print("%s != %s" % (next_url, expected_url))
             return False
         return True
 
@@ -55,8 +63,15 @@ def main():
 
     def simulate_user(n):
         u = User(args.hub_url, n, 'wat')
-        u.login()
-        return u.start_server()
+        try:
+            u.login()
+            result = u.start_server()
+        except Exception as e:
+            print("User %s failed" % n, e)
+            return False
+        else:
+            u.stop_server()
+            return result
 
     executor = ThreadPoolExecutor(max_workers=args.parallel_users)
     futures = []
@@ -64,12 +79,10 @@ def main():
         futures.append(executor.submit(simulate_user, 'user-{}-{}-{}'.format(args.total_users, args.parallel_users, i)))
 
     counts = {True: 0, False: 0}
-    i = 0
-    for f in futures:
-        i += 1
+    for i, f in enumerate(futures):
         counts[f.result()] += 1
-        if i % args.parallel_users == 0:
-            print(i, counts)
+        if (i+1) % min(args.parallel_users, 20) == 0:
+            print(i+1, counts)
 
 if __name__ == '__main__':
     main()
